@@ -2,6 +2,10 @@
 
 Các recipe dưới đây là prompt mẫu cho use-case browser phổ biến **không cần viết skill riêng**. Copy-paste prompt vào Claude Code đang chạy trong pane Cmux. Mỗi recipe đang được đánh dấu **⚠ chưa verify** và sẽ được verify dần.
 
+## Humanization baseline
+
+Mọi recipe dùng browser đều giả định agent đọc và áp dụng `cmux-browser-human` trước khi thao tác trên trang: hover trước khi click/type/select, dùng `type` thay cho `fill` khi có thể, thêm pause jitter ở các điểm tự nhiên, và snapshot lại sau navigation hoặc mutation. Không dùng chuỗi `fill` rồi `click` tức thì.
+
 ## Auto-healing UI — ⚠ chưa verify
 
 **Mục tiêu:** Mở app local, đọc lỗi console/UI, sửa code, reload và lặp đến khi trang sạch lỗi.

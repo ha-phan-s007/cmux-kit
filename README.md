@@ -22,7 +22,7 @@ Installer sẽ:
 1. kiểm tra macOS, Homebrew, và app Cmux;
 2. cài app Cmux nếu chưa có, sau khi bạn xác nhận;
 3. cài 4 skill chính chủ từ `manaflow-ai/cmux`;
-4. copy 2 skill kit `ask-gemini` và `qc-browse` vào `~/.claude/skills/`, backup bản cũ nếu có;
+4. copy 3 skill kit `cmux-browser-human`, `ask-gemini` và `qc-browse` vào `~/.claude/skills/`, backup bản cũ nếu có;
 5. thêm rule `Bash(cmux:*)` vào allow-list của **`~/.claude/settings.json` của chính bạn** (merge an toàn, backup file cũ, theo symlink nếu settings.json của bạn là symlink — ví dụ do dotfiles quản lý) — để mọi lệnh `cmux` chạy không bị hỏi permission mỗi lần. Nếu không có `jq`, bước này bị skip và installer in ra rule để bạn tự thêm tay;
 6. **tuỳ chọn** (hỏi xác nhận, không tự động): nếu `~/.config/ghostty/config` chưa có, đề nghị tạo theme cho Cmux khớp với theme/font hiện tại của Terminal.app — xem mục Theme dưới đây.
 
@@ -45,7 +45,7 @@ Trong pane Cmux, process sẽ có các env như `CMUX_WORKSPACE_ID`, `CMUX_SURFA
 
 ## Login Google/Gemini lần đầu
 
-Với Gemini, lần đầu hãy mở `https://gemini.google.com` trong browser surface của Cmux và dùng chuột login Google thủ công. Webview dùng cookie hệ thống, nên thường chỉ cần login một lần; các lần sau agent có thể vào thẳng chat. Sau khi login ổn định, có thể dùng `state save` để backup auth state nếu skill yêu cầu.
+Với Gemini, lần đầu hãy mở `https://gemini.google.com` trong browser surface của Cmux và dùng chuột login Google thủ công. Webview của Cmux có cookie store riêng, nên không nhất thiết kế thừa session từ Safari/Chrome; thường chỉ cần login một lần trong chính webview đó. Sau khi login ổn định, có thể dùng `state save` để backup auth state nếu skill yêu cầu.
 
 Chỉ dùng account của chính bạn và thao tác với tần suất giống người thật.
 
@@ -81,6 +81,7 @@ không phải default chung cho mọi người — theme/font là lựa chọn c
 | `cmux-browser` | chính chủ | Browser automation: open URL, wait, snapshot interactive, click/fill/press/select, đọc text/html/value. |
 | `cmux-workspace` | chính chủ | Quản lý workspace/window/pane/surface, target đúng context khi có nhiều cửa sổ hoặc workspace. |
 | `cmux-diagnostics` | chính chủ | Chẩn đoán lỗi Cmux, socket, permission, app state, và browser surface. |
+| `cmux-browser-human` | kit | Base overlay cho mọi thao tác browser qua Cmux: hover trước khi click/type, gõ từng ký tự, pause jitter, re-snapshot sau mutation, tránh chuỗi thao tác instant. |
 | `ask-gemini` | kit | Dùng Gemini web qua Cmux để hỏi/phản biện, ưu tiên text-only và snapshot compact. Trigger: `ask Gemini: <câu hỏi>` (tiếng Anh, để match skill ổn định). |
 | `qc-browse` | kit | Dùng browser surface để QC nhanh UI/web app, đọc console/page state và ghi nhận vấn đề. |
 
@@ -89,7 +90,7 @@ không phải default chung cho mọi người — theme/font là lựa chọn c
 ## Safety & ToS notes
 
 - Chỉ thao tác trên URL an toàn và đúng phạm vi công việc.
-- Với thao tác mutation như `fill`, `click`, `evaluate`, kiểm tra URL trước khi làm.
+- Với thao tác mutation như `type`, `fill`, `click`, `press`, `select`, `evaluate`, kiểm tra URL trước khi làm và áp dụng `cmux-browser-human` để thao tác giống người thật.
 - Với Gemini/Google, chỉ dùng account của chính bạn; ToS automation là vùng xám, nên tránh spam, scraping hàng loạt, hoặc hành vi vượt tần suất người dùng thật.
 - Giữ token hygiene: ưu tiên `snapshot --interactive`, trích text cần thiết, không đưa DOM dump/screenshot vào context nếu không cần.
 - Cmux browser dùng WKWebView, nên một số khả năng Chrome/CDP như viewport emulation, offline emulation, trace/screencast, network interception có thể không hỗ trợ.

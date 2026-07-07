@@ -9,6 +9,8 @@ Use this skill for autonomous manual QA in a cmux browser surface. Inputs are na
 
 Always use verified `cmux browser` commands only. Do not invent Playwright MCP or cmux commands.
 
+Before any browser interaction, use `cmux-browser-human` as the base layer. All mutation-capable actions in this skill must be performed through its human-paced helpers (`human_click`, `human_type`, `human_press`, `human_select`, or `human_fill_fallback` only when typing cannot work). Do not use instant `fill` + immediate `click` sequences.
+
 ## Modes
 
 Infer the mode from the prompt. If ambiguous, choose the safest read-only mode (`explore`) unless testcases are supplied.
@@ -65,30 +67,30 @@ Never submit forms, make purchases, send messages, delete data, or trigger irrev
 Open or reuse one surface for the task.
 
 ```bash
-cmux --json browser open "$URL"
-# capture returned surface ref, for example: SURFACE="surface:7"
+# Define the helper functions from `cmux-browser-human` in this same Bash invocation first.
+OPEN_JSON=$(cmux --json browser open "$URL")
+SURFACE=$(printf '%s' "$OPEN_JSON" | grep -o '"surface_ref"[^,}]*' | grep -o 'surface:[0-9]*')
+[ -n "$SURFACE" ] || { echo "Could not open browser surface."; exit 1; }
 
 cmux browser "$SURFACE" get url
-cmux browser "$SURFACE" wait --load-state complete --timeout-ms 15000
-cmux browser "$SURFACE" snapshot --interactive
+human_after_load "$SURFACE"
+human_snapshot "$SURFACE" > "$RUN_DIR/snapshot-home.txt"
 cmux browser "$SURFACE" screenshot > "$RUN_DIR/screenshot-home.b64"
 ```
 
 After every navigation or DOM-changing action:
 
 ```bash
-cmux browser "$SURFACE" get url
-cmux browser "$SURFACE" wait --load-state complete --timeout-ms 15000
-cmux browser "$SURFACE" snapshot --interactive
+human_snapshot "$SURFACE" > "$RUN_DIR/snapshot-after-action.txt"
 ```
 
 For action steps, prefer fresh refs from the latest `snapshot --interactive`:
 
 ```bash
-cmux browser "$SURFACE" fill e1 "value"
-cmux --json browser "$SURFACE" click e2 --snapshot-after
-cmux browser "$SURFACE" press Enter
-cmux browser "$SURFACE" snapshot --interactive
+human_type "$SURFACE" e1 "value"
+human_click "$SURFACE" e2 --snapshot-after
+human_press "$SURFACE" Enter
+human_snapshot "$SURFACE"
 ```
 
 If `snapshot --interactive` returns `js_error`, recover with:
@@ -190,9 +192,9 @@ Process:
 Use commands like:
 
 ```bash
-cmux browser "$SURFACE" fill e3 "qa@example.com"
-cmux browser "$SURFACE" press Tab
-cmux --json browser "$SURFACE" click e8 --snapshot-after
+human_type "$SURFACE" e3 "qa@example.com"
+human_press "$SURFACE" Tab
+human_click "$SURFACE" e8 --snapshot-after
 cmux browser "$SURFACE" snapshot --interactive > "$RUN_DIR/snapshot-TC01-step03.txt"
 cmux browser "$SURFACE" screenshot > "$RUN_DIR/screenshot-TC01-step03.b64"
 ```
@@ -279,7 +281,7 @@ Commands:
 ```bash
 cmux browser "$SURFACE" snapshot --interactive > "$RUN_DIR/snapshot-a11y-home.txt"
 cmux browser "$SURFACE" screenshot > "$RUN_DIR/screenshot-a11y-home.b64"
-cmux browser "$SURFACE" press Tab
+human_press "$SURFACE" Tab
 cmux browser "$SURFACE" snapshot --interactive
 cmux browser "$SURFACE" get styles e5 --property color
 cmux browser "$SURFACE" get styles e5 --property background-color

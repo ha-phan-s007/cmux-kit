@@ -113,6 +113,7 @@ copy_kit_skill() {
 }
 
 copy_kit_skills() {
+  copy_kit_skill "cmux-browser-human"
   copy_kit_skill "ask-gemini"
   copy_kit_skill "qc-browse"
 }
