@@ -35,10 +35,17 @@ Save:
 
 - `report.md` as the final report.
 - `snapshot-*.txt` for relevant text-only snapshots.
-- `screenshot-*.b64` for screenshot evidence.
+- `screenshot-*.png` for screenshot evidence.
 - `playwright.spec.ts` only for `gen-e2e` mode.
 
 Keep the main chat/context text-only. Do not paste full DOM, screenshots, or large snapshots into the main context unless strictly necessary.
+
+**Screenshot command note (verified 2026-07-07):** `cmux browser <surface> screenshot` does NOT
+print base64 to stdout on this CLI version — it always writes a real PNG file to disk and
+prints `OK <path>` to stdout. Always pass `--out "$RUN_DIR/screenshot-name.png"` explicitly;
+never redirect stdout to a `.b64` file (that captures only the one-line `OK <path>`
+confirmation, not image data — confirmed by inspecting actual command output, not assumed
+from older docs).
 
 ## Safety gate before mutation
 
@@ -75,7 +82,7 @@ SURFACE=$(printf '%s' "$OPEN_JSON" | grep -o '"surface_ref"[^,}]*' | grep -o 'su
 cmux browser "$SURFACE" get url
 human_after_load "$SURFACE"
 human_snapshot "$SURFACE" > "$RUN_DIR/snapshot-home.txt"
-cmux browser "$SURFACE" screenshot > "$RUN_DIR/screenshot-home.b64"
+cmux browser "$SURFACE" screenshot --out "$RUN_DIR/screenshot-home.png"
 ```
 
 After every navigation or DOM-changing action:
@@ -196,7 +203,7 @@ human_type "$SURFACE" e3 "qa@example.com"
 human_press "$SURFACE" Tab
 human_click "$SURFACE" e8 --snapshot-after
 cmux browser "$SURFACE" snapshot --interactive > "$RUN_DIR/snapshot-TC01-step03.txt"
-cmux browser "$SURFACE" screenshot > "$RUN_DIR/screenshot-TC01-step03.b64"
+cmux browser "$SURFACE" screenshot --out "$RUN_DIR/screenshot-TC01-step03.png"
 ```
 
 Write `report.md` with:
@@ -280,7 +287,7 @@ Commands:
 
 ```bash
 cmux browser "$SURFACE" snapshot --interactive > "$RUN_DIR/snapshot-a11y-home.txt"
-cmux browser "$SURFACE" screenshot > "$RUN_DIR/screenshot-a11y-home.b64"
+cmux browser "$SURFACE" screenshot --out "$RUN_DIR/screenshot-a11y-home.png"
 human_press "$SURFACE" Tab
 cmux browser "$SURFACE" snapshot --interactive
 cmux browser "$SURFACE" get styles e5 --property color

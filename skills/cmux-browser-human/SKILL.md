@@ -20,6 +20,7 @@ Every browser action must follow a human rhythm unless it is purely read-only ev
 - Execute flows in one batched Bash invocation when practical, so the whole sequence keeps pacing state and avoids one permission prompt per small action.
 - Re-read page state after navigation or DOM-changing actions: `get url`, `wait --load-state complete`, then `snapshot --interactive` or a scoped text read.
 - If a surface disappears or stops being a browser, stop and report it. Do not return stale snapshots as current evidence.
+- **Stop immediately if a 5xx-shaped or explicit error message shows up via `check_for_server_errors`** (see helper below) — do not continue mutating or polling past that point. See the honest limitation note under that helper before relying on it as a full safety net.
 
 ## Baseline helper functions
 
@@ -125,7 +126,38 @@ human_select() {
   cmux browser "$surface" select "$target" "$value"
   human_pause 0.7 1.8
 }
+
+check_for_server_errors() {
+  local surface="$1"
+  local hits
+  hits=$(cmux browser "$surface" console list 2>/dev/null | grep -iE '5[0-9]{2}|server error|network error|failed to load resource')
+  local err_hits
+  err_hits=$(cmux browser "$surface" errors list 2>/dev/null | grep -iE '5[0-9]{2}|server error|network error|failed to load resource')
+  if [ -n "$hits" ] || [ -n "$err_hits" ]; then
+    echo "STOP: possible server/network error found in console or errors:" >&2
+    [ -n "$hits" ] && printf '%s\n' "$hits" >&2
+    [ -n "$err_hits" ] && printf '%s\n' "$err_hits" >&2
+    return 1
+  fi
+  return 0
+}
 ```
+
+> **Honest limitation of `check_for_server_errors` (verified 2026-07-07 — read before relying on it):**
+> `cmux browser <surface> network requests` is explicitly `not_supported` on WKWebView (confirmed
+> live: `Error: not_supported: browser.network.requests is not supported on WKWebView`) — there is
+> no way to read real HTTP status codes for network requests through this tool at all.
+> `console list`/`errors list` DO capture explicit `console.log`/`console.error` calls made by a
+> page's own JavaScript (verified live), but they do **NOT** capture the browser's own
+> auto-generated "Failed to load resource: the server responded with a status of ..." messages for
+> failed subresource loads — verified with a controlled test (a real 404 confirmed in the local
+> HTTP server's access log produced zero entries in either `console list` or `errors list`). The
+> real CSP incident this project hit earlier ("Failed to load resource: Blocked by Content
+> Security Policy") is exactly this unreachable message shape. So `check_for_server_errors` is a
+> real but **partial** safety net — it only catches errors an app's own code explicitly logs, not
+> browser-native resource-load failures. **The human visually watching the browser remains the
+> more reliable backstop for CSP/resource-block-style errors specifically** — this has already
+> caught two real incidents in this project when the automated checks did not.
 
 ## Opening and navigating
 
@@ -146,6 +178,50 @@ cmux browser "$SURFACE" wait --selector '<stable-selector>' --timeout-ms 15000
 human_pause 0.8 1.8
 ```
 
+## Fingerprint / header check (verified 2026-07-07)
+
+The humanization layer above covers interaction *timing*. It says nothing about whether the
+browser's own HTTP headers and JS-visible properties look automated at the network/fingerprint
+level — checked this directly since WKWebView is a different engine from Chrome/Chromium, which
+a detector could plausibly key on.
+
+**What's actually fine (verified against a local echo server + live `eval`, not assumed):**
+- `User-Agent` sent over the wire is a completely standard, unmodified Safari string
+  (`Mozilla/5.0 (Macintosh; Intel Mac OS X ...) AppleWebKit/605.1.15 ... Safari/605.1.15`) — no
+  "WebView"/"Cmux"/framework name leaks into it.
+- Request headers (`Sec-Fetch-*`, `Accept`, `Accept-Language`, `Accept-Encoding`) match genuine
+  Safari shape. No `sec-ch-ua` client-hint headers — that is CORRECT for Safari (only Chromium
+  sends those), not a gap to "fix."
+- `navigator.webdriver` is `false`, `window.chrome` is `undefined` — both consistent with a
+  genuine, unpatched Safari engine (no Selenium/Playwright-style automation flag leaking).
+
+**Real gap found and fixed — `window.outerWidth`/`outerHeight` report `0`:** a classic
+headless/embedded-browser tell (real user windows report outer dimensions larger than inner, to
+account for chrome/toolbar). Confirmed via `eval` on a fresh surface. Fix (verified working —
+before: `{"outerW":0,"outerH":0}`, after: `{"outerW":851,"outerH":1064}` matching real
+`innerWidth`/`innerHeight` plus a plausible chrome offset):
+
+```bash
+cmux browser "$SURFACE" addinitscript "Object.defineProperty(window, 'outerWidth', {get: () => window.innerWidth}); Object.defineProperty(window, 'outerHeight', {get: () => window.innerHeight + 74});"
+cmux browser "$SURFACE" reload
+```
+
+`addinitscript` only applies to the NEXT navigation, not retroactively to an already-loaded
+document — call it once right after `open`, then `reload` (or navigate) before doing anything
+else, if this hardening matters for the target site. This costs one extra round-trip; skip it
+for low-stakes/local targets where it doesn't matter.
+
+**Real gap found, NOT fixed — the webview never has real OS-level keyboard focus during
+automation:** `document.hasFocus()` returns `false` while `document.visibilityState` is
+`"visible"` — an inconsistent combination a detector could check. `cmux browser <surface>
+focus-webview` (the command that should fix this) itself fails with `internal_error: Focus did
+not move into web view` when tried. Checking *why* (e.g. is the Cmux app frontmost) requires
+macOS Accessibility/Apple Events permissions this environment does not have
+(`osascript ... System Events` → `Not authorized to send Apple events to System Events`). This is
+an open, currently-unresolved gap — spoofing `document.hasFocus()` to return `true` via
+`addinitscript` would be worse than leaving it, since real focus/blur event firing would still be
+absent and could be cross-checked. No fix is claimed here; flagging it honestly instead.
+
 ## Action guidance
 
 - **Click:** `human_click "$SURFACE" e2 --snapshot-after` when a snapshot-after option is useful. Then save or inspect the returned snapshot.
@@ -162,7 +238,7 @@ Evidence commands can run directly, but keep them scoped and paced after page ch
 ```bash
 cmux browser "$SURFACE" get url
 cmux browser "$SURFACE" snapshot --interactive --compact --max-depth 3
-cmux browser "$SURFACE" screenshot > "$RUN_DIR/screenshot-home.b64"
+cmux browser "$SURFACE" screenshot --out "$RUN_DIR/screenshot-home.png"
 cmux browser "$SURFACE" get text body
 ```
 
@@ -174,3 +250,4 @@ Do not paste full DOM, full page HTML, cookies, localStorage, sessionStorage, or
 - If a click silently does nothing, inspect the target state and current URL before trying again.
 - If `snapshot --interactive` returns `js_error`, fall back to `get url`, scoped `get text`, and only then `get html` for the smallest useful container.
 - If the URL is production-like or outside the user's authorized scope, do not mutate. Use read-only inspection unless the user explicitly approves the exact action.
+- **Run `check_for_server_errors "$SURFACE"` after any action that triggers a backend call** (send/submit, navigation, generation) — if it returns non-zero, STOP the flow immediately: do not send another action, do not retry, do not poll further. Report the captured console/error lines to the human and let them decide. Remember its limitation above — a human-observed CSP/resource error with no console entry is just as much a stop signal as one this function catches.
