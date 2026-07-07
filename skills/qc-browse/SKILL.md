@@ -51,6 +51,40 @@ from older docs).
 
 Mutation means `fill`, `type`, `select`, `press`, `click`, `check`, `uncheck`, `scroll` when it can change state, storage/cookie writes, and any `eval` that changes page state.
 
+**Matching rule: hostname LABEL match, not substring match.** A plain substring check over
+the full URL is unsafe — `https://protest.com` contains `test`, `https://devices.foo.com`
+contains `dev` — any keyword appearing inside an unrelated hostname or path segment would
+wrongly pass. Match only against the parsed hostname, split on `.`, and require an EXACT
+label match (or an exact `.local` suffix):
+
+```bash
+is_safe_url() {
+  local url="$1"
+  shift
+  local extra_keywords=("$@")
+  python3 -c "
+import sys
+from urllib.parse import urlparse
+
+url = sys.argv[1]
+extra = sys.argv[2:]
+builtin = ['localhost', '127.0.0.1', '0.0.0.0', 'dev', 'staging', 'stage', 'test', 'sandbox', 'preview']
+keywords = set(builtin + extra)
+
+host = (urlparse(url).hostname or '').lower()
+labels = host.split('.')
+
+safe = host in keywords or host.endswith('.local') or any(label in keywords for label in labels)
+sys.exit(0 if safe else 1)
+" "$url" "${extra_keywords[@]}"
+}
+```
+
+Negative examples this fixes (these must NOT be treated as safe, and were previously
+matched by naive substring search): `https://protest.com` (not `test`), `https://devices.foo.com`
+(not `dev`), `https://latest-release.example.com` (not a safe label), `https://sandboxville-prod.io`
+(not `sandbox` — `sandboxville-prod` is one label, not an exact match).
+
 Before mutation:
 
 1. Check current URL:
@@ -60,12 +94,13 @@ Before mutation:
    ```
 
 2. Build the safe URL keyword list:
-   - Built-in low-risk keywords: `localhost`, `127.0.0.1`, `0.0.0.0`, `.local`, `dev`, `staging`, `stage`, `test`, `sandbox`, `preview`.
-   - If `.clark/stack.yml` exists, read `qc.safe_url_keywords` and append those project-specific keywords.
+   - Built-in low-risk keywords: `localhost`, `127.0.0.1`, `0.0.0.0`, `.local` (suffix), `dev`, `staging`, `stage`, `test`, `sandbox`, `preview`.
+   - If `.clark/stack.yml` exists, read `qc.safe_url_keywords` and pass those project-specific keywords as extra arguments to `is_safe_url`.
 
-3. Mutate only when the current URL matches the safe list.
-4. If there is no `.clark/stack.yml` and the URL does not match the built-in safe list, ask the user before mutation on the unknown URL.
+3. Mutate only when `is_safe_url "$(cmux browser "$SURFACE" get url)"` succeeds (exit 0).
+4. If there is no `.clark/stack.yml` and the URL does not pass `is_safe_url`, ask the user before mutation on the unknown URL.
 5. If blocked from asking, continue only with read-only actions: `open`, `goto`, `get url`, `get title`, `snapshot`, `get text`, `get html`, `get attr`, `get count`, `get box`, `get styles`, screenshots, and waits.
+6. Inside a batched multi-step Bash invocation, re-run `is_safe_url` against the CURRENT URL immediately before each individual mutating step, not just once at the start of the sequence — a redirect or navigation earlier in the same batch can land on an unsafe URL that the initial check never saw.
 
 Never submit forms, make purchases, send messages, delete data, or trigger irreversible workflow actions unless the prompt explicitly authorizes that exact action and the URL passes the safety gate.
 
@@ -74,13 +109,18 @@ Never submit forms, make purchases, send messages, delete data, or trigger irrev
 Open or reuse one surface for the task.
 
 ```bash
-# Define the helper functions from `cmux-browser-human` in this same Bash invocation first.
+# Define the helper functions from `cmux-browser-human` (including `check_for_server_errors`)
+# and this skill's own `is_safe_url` in this same Bash invocation first.
 OPEN_JSON=$(cmux --json browser open "$URL")
 SURFACE=$(printf '%s' "$OPEN_JSON" | grep -o '"surface_ref"[^,}]*' | grep -o 'surface:[0-9]*')
 [ -n "$SURFACE" ] || { echo "Could not open browser surface."; exit 1; }
 
 cmux browser "$SURFACE" get url
 human_after_load "$SURFACE"
+if ! check_for_server_errors "$SURFACE"; then
+  echo "STOP: server/network error detected after initial load — see lines above."
+  exit 1
+fi
 human_snapshot "$SURFACE" > "$RUN_DIR/snapshot-home.txt"
 cmux browser "$SURFACE" screenshot --out "$RUN_DIR/screenshot-home.png"
 ```
@@ -186,22 +226,28 @@ Process:
 1. Create `RUN_DIR`.
 2. Open URL and snapshot the initial state.
 3. For each testcase, reset to the required start URL/state if specified.
-4. Before each mutating step, apply the safety gate.
+4. Before each mutating step, apply the safety gate (re-check `is_safe_url` immediately before the step, not just once at case start — see Safety gate below).
 5. Execute exactly one step at a time with `fill`, `click`, `press`, `select`, etc.
-6. After each step, capture a fresh snapshot.
-7. Set `actual` to a detailed description of what is visible in the snapshot: labels, values, messages, enabled/disabled state, URL changes, modal/page changes, list/table content, validation errors.
-8. Capture screenshot evidence for important steps: start state, each assertion point, failures, final state.
-9. Verdict per step/case:
+6. After each mutating step, run `check_for_server_errors "$SURFACE"`. If it fails, mark the step/case `FAIL`, record the captured console/error lines as the finding, and STOP the run — do not execute further steps.
+7. After each step, capture a fresh snapshot.
+8. Set `actual` to a detailed description of what is visible in the snapshot: labels, values, messages, enabled/disabled state, URL changes, modal/page changes, list/table content, validation errors.
+9. Capture screenshot evidence for important steps: start state, each assertion point, failures, final state.
+10. Verdict per step/case:
    - `PASS` when actual visible behavior matches expected.
-   - `FAIL` when actual contradicts expected or required UI is missing.
+   - `FAIL` when actual contradicts expected, required UI is missing, or `check_for_server_errors` detected a server/network error.
    - `BLOCKED` when safety/auth/environment prevents execution.
 
 Use commands like:
 
 ```bash
+is_safe_url "$(cmux browser "$SURFACE" get url)" || { echo "BLOCKED: URL failed safety gate"; exit 1; }
 human_type "$SURFACE" e3 "qa@example.com"
 human_press "$SURFACE" Tab
 human_click "$SURFACE" e8 --snapshot-after
+if ! check_for_server_errors "$SURFACE"; then
+  echo "FAIL: server/network error detected after step — see lines above."
+  exit 1
+fi
 cmux browser "$SURFACE" snapshot --interactive > "$RUN_DIR/snapshot-TC01-step03.txt"
 cmux browser "$SURFACE" screenshot --out "$RUN_DIR/screenshot-TC01-step03.png"
 ```

@@ -9,6 +9,8 @@ Use this skill as the base layer for any `cmux browser` workflow. The goal is to
 
 This skill does not replace the official `cmux-browser` skill. It constrains how to use it safely and humanly.
 
+`qc-browse` sources `check_for_server_errors` directly from this skill; `ask-gemini` carries its own ported copy of `check_for_server_errors` plus the fingerprint fix below (it runs standalone, so it inlines rather than sources). This file remains the source of truth for both — its documented behavior and limitations here.
+
 ## Core rule
 
 Every browser action must follow a human rhythm unless it is purely read-only evidence collection.

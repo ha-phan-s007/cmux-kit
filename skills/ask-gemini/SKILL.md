@@ -7,7 +7,7 @@ description: Use when you need to offload a question to Google Gemini web UI via
 
 Use this skill from Claude Code running inside a Cmux pane to ask Gemini in the web UI and return only Gemini's answer text.
 
-This skill carries a local, Gemini-specific version of the same humanization policy that is reusable in `cmux-browser-human`. When changing browser pacing or action rules here, keep the base skill aligned too.
+This skill shares its humanization policy (jitter/hover/type pacing) with `cmux-browser-human` and ports two specific pieces of that skill's hardening directly into this file's own bash blocks (rather than sourcing them, since this skill runs standalone): the `check_for_server_errors` stop-on-error check, and the `outerWidth`/`outerHeight` fingerprint fix. When changing either file, explicitly re-check alignment on: jitter/hover/type rules, pacing, pane-death handling, the server-error stop, and the fingerprint fixes.
 
 ## Preconditions
 
@@ -77,6 +77,13 @@ if [ -z "$S" ]; then
   S=$(printf '%s' "$OPEN_JSON" | grep -o '"surface_ref"[^,}]*' | grep -o 'surface:[0-9]*')
   [ -n "$S" ] || { echo "Could not open a Gemini surface."; exit 1; }
   echo "$S" > "$SURFACE_FILE"
+  # Fingerprint hardening (source of truth: cmux-browser-human "Fingerprint / header
+  # check") — WKWebView reports outerWidth/outerHeight=0, a classic automation tell.
+  # addinitscript only takes effect on the NEXT navigation, so reload once now. Only
+  # do this for a freshly opened surface — a reused surface already has it applied
+  # and reloading it would lose page/session state.
+  cmux browser "$S" addinitscript "Object.defineProperty(window, 'outerWidth', {get: () => window.innerWidth}); Object.defineProperty(window, 'outerHeight', {get: () => window.innerHeight + 74});"
+  cmux browser "$S" reload
 fi
 cmux browser "$S" wait --selector 'div.ql-editor' --timeout-ms 15000
 cmux browser "$S" get url
@@ -201,6 +208,24 @@ MIN_INTERVAL=20   # seconds; raise this if asking many questions in a session
 
 jitter() { python3 -c "import random,sys; lo,hi=float(sys.argv[1]),float(sys.argv[2]); print(round(random.uniform(lo,hi),1))" "$@"; }
 
+# Ported from cmux-browser-human's helper of the same name (source of truth for its
+# documented partial-coverage limitation — see that skill's "Fingerprint / header
+# check" section neighbor, the "Honest limitation" note above its definition).
+check_for_server_errors() {
+  local surface="$1"
+  local hits
+  hits=$(cmux browser "$surface" console list 2>/dev/null | grep -iE '5[0-9]{2}|server error|network error|failed to load resource')
+  local err_hits
+  err_hits=$(cmux browser "$surface" errors list 2>/dev/null | grep -iE '5[0-9]{2}|server error|network error|failed to load resource')
+  if [ -n "$hits" ] || [ -n "$err_hits" ]; then
+    echo "STOP: possible server/network error found in console or errors:" >&2
+    [ -n "$hits" ] && printf '%s\n' "$hits" >&2
+    [ -n "$err_hits" ] && printf '%s\n' "$err_hits" >&2
+    return 1
+  fi
+  return 0
+}
+
 if [ -f "$LASTASK_FILE" ]; then
   now=$(date +%s)
   elapsed=$((now - $(cat "$LASTASK_FILE")))
@@ -210,6 +235,12 @@ date +%s > "$LASTASK_FILE"
 
 Q='Replace with the exact question.'
 cmux browser $S wait --selector 'div.ql-editor' --timeout-ms 15000
+
+if ! check_for_server_errors "$S"; then
+  echo "__ASK_GEMINI_SERVER_ERROR__ (server/network error detected on surface resolution — see lines above)"
+  exit 1
+fi
+
 sleep "$(jitter 1.0 2.5)"                              # reading the page before acting
 cmux browser $S hover 'div.ql-editor'
 cmux browser $S focus 'div.ql-editor'
@@ -257,6 +288,9 @@ done
 if [ "$died" -eq 1 ]; then
   rm -f "$STATE_DIR/gemini-surface"
   echo "__ASK_GEMINI_PANE_DIED__ (browser pane closed or crashed mid-generation — any text below is INCOMPLETE, do not treat as the final answer)"
+elif ! check_for_server_errors "$S"; then
+  echo "__ASK_GEMINI_SERVER_ERROR__ (server/network error detected after answer generation — see lines above; do not treat any text as a complete/trustworthy answer)"
+  exit 1
 else
   cmux browser $S get text 'chat-window'
 fi
@@ -284,6 +318,15 @@ user as if it were the complete answer. Report plainly that the browser pane clo
 generation, and ask the user whether to retry (a fresh surface will be opened automatically
 on the next ask since the stale ref was cleared) — don't auto-retry in a loop, since repeated
 immediate retries after a failure is exactly the bot-like pattern to avoid.
+
+**If the output starts with `__ASK_GEMINI_SERVER_ERROR__`:** do NOT present any text as the
+answer. Report plainly that a server/network error was detected (via `check_for_server_errors`)
+either before the question was sent or after generation finished, and show the captured
+console/error lines to the user. Do not retry automatically — same reasoning as pane-death
+above. Remember `check_for_server_errors`'s documented partial coverage (see
+`cmux-browser-human`'s "Honest limitation" note): it catches errors a page's own JS explicitly
+logs, not all browser-native resource-load failures, so absence of a hit here is not a full
+guarantee.
 
 Final response format to the user must be text-only: Gemini's answer, plus no extra metadata unless fallback was used.
 
