@@ -192,14 +192,18 @@ install_guard_hook() {
   fi
 
   mkdir -p "$HOOKS_DEST_DIR"
-  if [[ -e "$dest" ]] && ! diff -q "$src" "$dest" >/dev/null 2>&1; then
-    local backup="${dest}.backup.$(date +%Y%m%d%H%M%S)"
-    info "Backing up existing ${dest} to ${backup}"
-    cp "$dest" "$backup"
+  if [[ -e "$dest" ]] && diff -q "$src" "$dest" >/dev/null 2>&1; then
+    info "Guard hook already up to date at ${dest}."
+  else
+    if [[ -e "$dest" ]]; then
+      local backup="${dest}.backup.$(date +%Y%m%d%H%M%S)"
+      info "Backing up existing ${dest} to ${backup}"
+      cp "$dest" "$backup"
+    fi
+    cp "$src" "$dest"
+    chmod +x "$dest"
+    info "Copied guard hook to ${dest}."
   fi
-  cp "$src" "$dest"
-  chmod +x "$dest"
-  info "Copied guard hook to ${dest}."
 
   register_guard_hook "$dest"
 }
@@ -279,12 +283,15 @@ configure_theme() {
   fi
 
   mkdir -p "${HOME}/.config/ghostty"
-  if ! python3 "${SCRIPT_DIR}/theme/extract-terminal-theme.py" > "$ghostty_config" 2>/tmp/cmux-kit-theme-err; then
-    warn "Could not extract your Terminal.app theme ($(cat /tmp/cmux-kit-theme-err))."
+  local theme_err
+  theme_err="$(mktemp -t cmux-kit-theme-err.XXXXXX)"
+  if ! python3 "${SCRIPT_DIR}/theme/extract-terminal-theme.py" > "$ghostty_config" 2>"$theme_err"; then
+    warn "Could not extract your Terminal.app theme ($(cat "$theme_err"))."
     warn "You can copy ${SCRIPT_DIR}/theme/ghostty-config.example manually instead."
-    rm -f "$ghostty_config"
+    rm -f "$ghostty_config" "$theme_err"
     return
   fi
+  rm -f "$theme_err"
 
   info "Wrote ${ghostty_config} from your Terminal.app profile."
   info "Review the font-family line (PostScript vs. family name caveat is noted inline)."
