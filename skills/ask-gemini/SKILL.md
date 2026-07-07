@@ -107,6 +107,15 @@ if [ -z "$S" ]; then
   S=$(printf '%s' "$OPEN_JSON" | grep -o '"surface_ref"[^,}]*' | grep -o 'surface:[0-9]*')
   [ -n "$S" ] || { echo "Could not open a Gemini surface."; exit 1; }
   echo "$S" > "$SURFACE_FILE"
+  # addinitscript is a gated mutation subcommand (see "Mechanical backstop" below) --
+  # we just opened this surface on https://gemini.google.com ourselves, so write the
+  # approval record now, before calling it, using the URL we opened.
+  mkdir -p .clark
+  QC_EXPIRES=$(date -u -v+30M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || \
+    QC_EXPIRES=$(python3 -c "import datetime; print((datetime.datetime.utcnow()+datetime.timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+  jq -n --arg url "https://gemini.google.com" --arg expires "$QC_EXPIRES" \
+        '{approved:true, classification:"safe", human_approved:false, url:$url, expires_at:$expires}' \
+        > .clark/.qc-browser-approval.json
   # Fingerprint hardening (source of truth: cmux-browser-human "Fingerprint / header
   # check") — WKWebView reports outerWidth/outerHeight=0, a classic automation tell.
   # addinitscript only takes effect on the NEXT navigation, so reload once now. Only
@@ -192,6 +201,37 @@ cmux browser "$SURFACE" state save ~/.local/state/cmux/gemini-state.json
 
 Never load the state file into context. Never run `cat`, `sed`, `grep`, `jq`, or similar commands on `~/.local/state/cmux/gemini-state.json`.
 
+## Mechanical backstop: `hooks/guard-cmux.sh` reads an approval record, not the URL itself
+
+`hooks/guard-cmux.sh` (installed as a PreToolUse Bash hook) blocks every mutation-capable
+`cmux browser` subcommand — including this skill's `type`/`click`/`press` calls — unless a
+fresh, valid approval record exists at `.clark/.qc-browser-approval.json`. The hook does NOT
+resolve or classify the URL itself (a PreToolUse hook only sees the command as a literal
+string, before `$S` expands, so it cannot reliably resolve the live URL from the command
+text) — it trusts a record that THIS skill writes once Surface Resolution above has
+confirmed the surface is actually on `gemini.google.com`. This is defense-in-depth, not an
+independent oracle: the skill enforces the gemini-only domain restriction, the hook only
+enforces that a fresh record already exists before allowing the mutation through. Do not
+weaken the gemini-only domain check, the pane-death/server-error sentinels, or
+`MIN_INTERVAL` because this record exists — they are independent layers.
+
+Write the record with the same helper `qc-browse` uses (macOS BSD `date`, with a `python3`
+fallback for portability):
+
+```bash
+write_qc_approval() {
+  local url="$1" classification="$2" human_approved="${3:-false}"
+  mkdir -p .clark
+  local expires
+  expires=$(date -u -v+30M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || \
+    expires=$(python3 -c "import datetime; print((datetime.datetime.utcnow()+datetime.timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+  jq -n --arg url "$url" --arg classification "$classification" \
+        --argjson human_approved "$human_approved" --arg expires "$expires" \
+        '{approved:true, classification:$classification, human_approved:$human_approved, url:$url, expires_at:$expires}' \
+        > .clark/.qc-browser-approval.json
+}
+```
+
 ## Ask the Question — ONE batched Bash call (DX rule)
 
 Run the whole pacing→ask→send→wait→extract loop as a SINGLE Bash invocation. Do NOT issue
@@ -238,6 +278,20 @@ MIN_INTERVAL=20   # seconds; raise this if asking many questions in a session
 
 jitter() { python3 -c "import random,sys; lo,hi=float(sys.argv[1]),float(sys.argv[2]); print(round(random.uniform(lo,hi),1))" "$@"; }
 
+# See "Mechanical backstop" above -- writes the approval record hooks/guard-cmux.sh checks
+# before allowing this skill's type/click/press calls through.
+write_qc_approval() {
+  local url="$1" classification="$2" human_approved="${3:-false}"
+  mkdir -p .clark
+  local expires
+  expires=$(date -u -v+30M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || \
+    expires=$(python3 -c "import datetime; print((datetime.datetime.utcnow()+datetime.timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+  jq -n --arg url "$url" --arg classification "$classification" \
+        --argjson human_approved "$human_approved" --arg expires "$expires" \
+        '{approved:true, classification:$classification, human_approved:$human_approved, url:$url, expires_at:$expires}' \
+        > .clark/.qc-browser-approval.json
+}
+
 # Ported from cmux-browser-human's helper of the same name (source of truth for its
 # documented partial-coverage limitation — see that skill's "Fingerprint / header
 # check" section neighbor, the "Honest limitation" note above its definition).
@@ -270,6 +324,12 @@ if ! check_for_server_errors "$S"; then
   echo "__ASK_GEMINI_SERVER_ERROR__ (server/network error detected on surface resolution — see lines above)"
   exit 1
 fi
+
+# Surface confirmed alive on gemini.google.com (Surface Resolution above already verified
+# this) -- write the approval record BEFORE the first mutating action so guard-cmux.sh
+# allows the hover/type/click calls below.
+GEMINI_URL=$(cmux browser $S get url)
+write_qc_approval "$GEMINI_URL" "safe" false
 
 sleep "$(jitter 1.0 2.5)"                              # reading the page before acting
 cmux browser $S hover 'div.ql-editor'

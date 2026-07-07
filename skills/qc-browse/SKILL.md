@@ -85,6 +85,36 @@ matched by naive substring search): `https://protest.com` (not `test`), `https:/
 (not `dev`), `https://latest-release.example.com` (not a safe label), `https://sandboxville-prod.io`
 (not `sandbox` — `sandboxville-prod` is one label, not an exact match).
 
+### Mechanical backstop: `hooks/guard-cmux.sh` reads an approval record, not the URL itself
+
+`hooks/guard-cmux.sh` (installed as a PreToolUse Bash hook) blocks every mutation-capable
+`cmux browser` subcommand unless a fresh, valid approval record exists at
+`.clark/.qc-browser-approval.json`. The hook does NOT resolve or classify the URL itself
+(a PreToolUse hook only sees the command as a literal string, before shell variables like
+`$SURFACE` expand, so it cannot reliably resolve the live URL from the command text) — it
+trusts a record that THIS skill writes after running its own `is_safe_url` gate below. This
+is defense-in-depth, not an independent oracle: the skill classifies, the hook only
+enforces that a fresh classification-plus-approval record exists before allowing the
+mutation through. A mutation attempted with no record, or an expired one, is still blocked
+mechanically even if this skill's own gate is skipped or misjudges.
+
+Write the record with this helper (macOS BSD `date`, with a `python3` fallback for
+portability):
+
+```bash
+write_qc_approval() {
+  local url="$1" classification="$2" human_approved="${3:-false}"
+  mkdir -p .clark
+  local expires
+  expires=$(date -u -v+30M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || \
+    expires=$(python3 -c "import datetime; print((datetime.datetime.utcnow()+datetime.timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+  jq -n --arg url "$url" --arg classification "$classification" \
+        --argjson human_approved "$human_approved" --arg expires "$expires" \
+        '{approved:true, classification:$classification, human_approved:$human_approved, url:$url, expires_at:$expires}' \
+        > .clark/.qc-browser-approval.json
+}
+```
+
 Before mutation:
 
 1. Check current URL:
@@ -97,10 +127,26 @@ Before mutation:
    - Built-in low-risk keywords: `localhost`, `127.0.0.1`, `0.0.0.0`, `.local` (suffix), `dev`, `staging`, `stage`, `test`, `sandbox`, `preview`.
    - If `.clark/stack.yml` exists, read `qc.safe_url_keywords` and pass those project-specific keywords as extra arguments to `is_safe_url`.
 
-3. Mutate only when `is_safe_url "$(cmux browser "$SURFACE" get url)"` succeeds (exit 0).
-4. If there is no `.clark/stack.yml` and the URL does not pass `is_safe_url`, ask the user before mutation on the unknown URL.
+3. Mutate only when `is_safe_url "$(cmux browser "$SURFACE" get url)"` succeeds (exit 0). Once it passes, write the approval record BEFORE the mutating step so the hook (which runs on that same Bash call) sees it:
+
+   ```bash
+   CURRENT_URL=$(cmux browser "$SURFACE" get url)
+   if is_safe_url "$CURRENT_URL"; then
+     write_qc_approval "$CURRENT_URL" "safe" false
+   else
+     echo "BLOCKED: URL failed safety gate, needs human approval before mutation" >&2
+     exit 1
+   fi
+   ```
+
+4. If there is no `.clark/stack.yml` and the URL does not pass `is_safe_url`, ask the user before mutation on the unknown URL. Only after the human explicitly approves, write the record with `classification="production_like"` and `human_approved=true` (the hook requires `human_approved:true` for any non-safe-classified record):
+
+   ```bash
+   write_qc_approval "$CURRENT_URL" "production_like" true
+   ```
+
 5. If blocked from asking, continue only with read-only actions: `open`, `goto`, `get url`, `get title`, `snapshot`, `get text`, `get html`, `get attr`, `get count`, `get box`, `get styles`, screenshots, and waits.
-6. Inside a batched multi-step Bash invocation, re-run `is_safe_url` against the CURRENT URL immediately before each individual mutating step, not just once at the start of the sequence — a redirect or navigation earlier in the same batch can land on an unsafe URL that the initial check never saw.
+6. Inside a batched multi-step Bash invocation, re-run `is_safe_url` against the CURRENT URL immediately before each individual mutating step, not just once at the start of the sequence — a redirect or navigation earlier in the same batch can land on an unsafe URL that the initial check never saw. Re-run `write_qc_approval` at the same point so the record's `url` field and freshness stay aligned with the step actually about to execute.
 
 Never submit forms, make purchases, send messages, delete data, or trigger irreversible workflow actions unless the prompt explicitly authorizes that exact action and the URL passes the safety gate.
 
@@ -110,7 +156,7 @@ Open or reuse one surface for the task.
 
 ```bash
 # Define the helper functions from `cmux-browser-human` (including `check_for_server_errors`)
-# and this skill's own `is_safe_url` in this same Bash invocation first.
+# and this skill's own `is_safe_url` / `write_qc_approval` in this same Bash invocation first.
 OPEN_JSON=$(cmux --json browser open "$URL")
 SURFACE=$(printf '%s' "$OPEN_JSON" | grep -o '"surface_ref"[^,}]*' | grep -o 'surface:[0-9]*')
 [ -n "$SURFACE" ] || { echo "Could not open browser surface."; exit 1; }
@@ -240,7 +286,9 @@ Process:
 Use commands like:
 
 ```bash
-is_safe_url "$(cmux browser "$SURFACE" get url)" || { echo "BLOCKED: URL failed safety gate"; exit 1; }
+CURRENT_URL=$(cmux browser "$SURFACE" get url)
+is_safe_url "$CURRENT_URL" || { echo "BLOCKED: URL failed safety gate"; exit 1; }
+write_qc_approval "$CURRENT_URL" "safe" false
 human_type "$SURFACE" e3 "qa@example.com"
 human_press "$SURFACE" Tab
 human_click "$SURFACE" e8 --snapshot-after
