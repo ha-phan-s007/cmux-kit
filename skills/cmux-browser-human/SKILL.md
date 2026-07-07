@@ -224,6 +224,17 @@ an open, currently-unresolved gap — spoofing `document.hasFocus()` to return `
 `addinitscript` would be worse than leaving it, since real focus/blur event firing would still be
 absent and could be cross-checked. No fix is claimed here; flagging it honestly instead.
 
+**Update 2026-07-07 — the cheap fix does NOT work, and it is NOT a permission problem:** re-tested
+on a surface whose `visibilityState` was already `"visible"` (not hidden). `focus-webview` STILL
+failed with the SAME `internal_error: Focus did not move into web view`, `hasFocus()` stayed
+`false`, and `press Tab` did not move `document.activeElement` off `BODY`. Crucially the error is
+an *internal_error*, NOT the TCC `-1743 Not authorized` you get when Apple Events permission is
+missing — so this is a cmux/WKWebView limitation, and granting Apple Events/Accessibility is
+unlikely to fix it (and can't be auto-granted anyway: macOS TCC forbids any script, even sudo,
+from granting it — only a GUI consent or an MDM PPPC profile can). Practical stance: treat
+keyboard-focus-dependent checks (e.g. Tab-order a11y testing) and the hasFocus fingerprint tell as
+accepted residual limitations of cmux automation, documented rather than worked around.
+
 ## Action guidance
 
 - **Click:** `human_click "$SURFACE" e2 --snapshot-after` when a snapshot-after option is useful. Then save or inspect the returned snapshot.
