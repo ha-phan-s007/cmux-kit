@@ -43,6 +43,16 @@ Real incidents hit while building this skill, and why each matters:
    though this skill does no more than a human would (type + click), avoid looking bot-like:
    space out consecutive asks, and treat any close/crash as a signal to slow down, not to
    retry immediately in a loop.
+4. **Don't write literal `$1`/`$2` in this file's bash blocks.** Observed 2026-07-07: when this
+   skill is invoked with multi-word `args`, the rendered content handed to the agent had every
+   literal `$1`/`$2` token silently replaced with a word from the args (e.g. asking "Hôm nay ăn
+   gì" turned `random.uniform($1, $2)` into `random.uniform(nay, ăn)`) — the file on disk was
+   unaffected, only what gets displayed at invocation time. Root cause is upstream in how the
+   skill-loading layer handles positional-arg-shaped tokens, not something fixable in this repo,
+   so the defensive fix here is to simply never use bare `$1`/`$2` in example code — see
+   `jitter()` below, which takes its bounds via `"$@"` + `sys.argv` instead. If you add new bash
+   here, verify by reading the file straight off disk (not via the Skill tool output) before
+   trusting any `$<digit>` you see rendered.
 
 ## Surface Resolution (state-tracked, self-healing)
 
@@ -68,15 +78,18 @@ if [ -z "$S" ]; then
   [ -n "$S" ] || { echo "Could not open a Gemini surface."; exit 1; }
   echo "$S" > "$SURFACE_FILE"
 fi
-cmux browser "$S" wait --load-state complete --timeout-ms 15000
 cmux browser "$S" wait --selector 'div.ql-editor' --timeout-ms 15000
 cmux browser "$S" get url
 ```
 
-`wait --load-state complete` alone is NOT enough — Gemini is a client-side-routed SPA, so the
-page can report `complete` while still on `gemini.google.com/` and not yet finished routing to
-`/app` with the chat editor mounted. Always also `wait --selector 'div.ql-editor'` before
-touching the input; otherwise `fill`/`click` fail with `not_found` on a page that looks loaded.
+Do NOT also call `wait --load-state complete` here — observed 2026-07-07: on this page it
+throws `js_error: Wait condition could not be evaluated: JavaScript execution returned a
+result of an unsupported type` (a `cmux-browser` quirk evaluating load-state on Gemini's SPA
+shell), and it adds nothing `wait --selector` doesn't already cover. `wait --selector
+'div.ql-editor'` alone is both necessary AND sufficient: Gemini is a client-side-routed SPA,
+so `load-state complete` (even if it worked) could report `complete` while still on
+`gemini.google.com/` and not yet routed to `/app` with the chat editor mounted — waiting on
+the editor selector directly is the correct readiness signal either way.
 
 If this prints a Google login URL instead of `gemini.google.com/app`, go to Login Handling below.
 
@@ -97,7 +110,7 @@ when already on the right model (fewer actions = less bot-like, and faster):
 
 ```bash
 MODEL="${MODEL:-3.5 Flash}"
-jitter() { python3 -c "import random; print(round(random.uniform($1, $2), 1))"; }
+jitter() { python3 -c "import random,sys; lo,hi=float(sys.argv[1]),float(sys.argv[2]); print(round(random.uniform(lo,hi),1))" "$@"; }
 
 current_label=$(cmux browser $S get text 'button[aria-label*="chọn chế độ"]' 2>/dev/null)
 if [ -n "$MODEL" ] && ! printf '%s' "$current_label" | grep -qF "$MODEL"; then
@@ -186,7 +199,7 @@ STATE_DIR="$HOME/.local/state/cmux"
 LASTASK_FILE="$STATE_DIR/gemini-last-ask"
 MIN_INTERVAL=20   # seconds; raise this if asking many questions in a session
 
-jitter() { python3 -c "import random; print(round(random.uniform($1, $2), 1))"; }
+jitter() { python3 -c "import random,sys; lo,hi=float(sys.argv[1]),float(sys.argv[2]); print(round(random.uniform(lo,hi),1))" "$@"; }
 
 if [ -f "$LASTASK_FILE" ]; then
   now=$(date +%s)
