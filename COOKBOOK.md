@@ -68,7 +68,7 @@ Do not modify data unless explicitly needed for verification.
 
 **Lưu ý:** Đây là read-only verification mặc định. Nếu cần edit/delete data, yêu cầu prompt phải nói rõ.
 
-## Đọc docs mới trên trang JS-heavy — ⚠ chưa verify
+## Đọc docs mới trên trang JS-heavy — ✅ verified 2026-07-07
 
 **Mục tiêu:** Mở docs cần JS render, snapshot, rồi trích code example hữu ích.
 
