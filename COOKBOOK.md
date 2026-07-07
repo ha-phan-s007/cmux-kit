@@ -100,7 +100,7 @@ Return text-only evidence and note where auth state was saved.
 
 **Lưu ý:** Với OAuth/2FA, để human thao tác bằng chuột/bàn phím trong browser surface. Không đưa credential vào prompt.
 
-## A11y audit nhanh 1 trang — ⚠ chưa verify
+## A11y audit nhanh 1 trang — ✅ tree/tên/heading/alt verified 2026-07-07 · ⚠ keyboard-focus chưa verify (webview hidden, không phải guard)
 
 **Mục tiêu:** Audit nhanh accessibility cho một trang.
 
