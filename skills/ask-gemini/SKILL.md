@@ -23,6 +23,36 @@ fi
 2. Only automate `https://gemini.google.com`. Do not use this skill on other domains.
 3. Never read, print, paste, summarize, or commit browser state files, cookies, localStorage, or sessionStorage.
 
+## Context handling — inline only, chunk large context deliberately
+
+This skill does not upload files. A file-attach flow was tried and rejected: a
+click-interception patch fired correctly on a local test page but did not fire on the real
+Gemini UI (the real attach button opens a submenu and behaves differently, and the attempt
+left the page reset to a fresh conversation). Until that's actually verified end-to-end,
+treat upload as unsupported. All context goes inline in the question text.
+
+When the caller wants Gemini to reason over something large (a long file, several files, a
+big spec), do not paste the whole thing into one prompt and do not attempt an upload:
+
+1. **Extract, don't dump.** Pull only the portion of the artifact relevant to the question —
+   the function, the section, the diff — instead of pasting the entire file.
+2. **Split only if still too large for one coherent prompt.** Break into a small number of
+   self-contained sub-questions, each carrying just the context that sub-question needs. Don't
+   split further than the content actually requires.
+3. **Prefer building context once, then asking follow-ups in the same conversation** —
+   summarize-then-ask, or establish-context-then-follow-up — over separate asks that each
+   re-paste the same background.
+
+**Balance against account-safety.** Every extra ask is another exposure to bot detection and
+rate limiting (see Known failure modes below), and every ask is paced by `MIN_INTERVAL` — the
+CSP-related incidents observed while building this skill correlated with consecutive asks in
+one session. So chunking must be deliberate, not reflexive: don't over-split. Rough heuristic —
+keep inline context per ask to roughly a few thousand words (well under what a human would
+paste into a chat box in one go); if answering the question well would need more than 3-4
+sub-questions, reconsider whether Gemini is the right tool for this at all versus handling it
+locally. More chunks means more asks, so respect `MIN_INTERVAL` between them rather than
+bursting through the loop back-to-back.
+
 ## Known failure modes (observed 2026-07-07 — read before automating)
 
 Real incidents hit while building this skill, and why each matters:
