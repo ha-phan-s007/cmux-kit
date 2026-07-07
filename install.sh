@@ -3,7 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="${HOME}/.claude/skills"
+HOOKS_DEST_DIR="${HOME}/.claude/hooks"
 CMUX_VERSION="0.64.17"
+# Pinned to the upstream tag matching CMUX_VERSION (verified: `git ls-remote --tags
+# https://github.com/manaflow-ai/cmux.git` resolves refs/tags/v0.64.17 to this commit,
+# which also matches this machine's installed `cmux --version` build hash). Pinning by
+# commit SHA (not the `main` branch) means skills.sh content here cannot change out from
+# under us between installs.
+UPSTREAM_CMUX_REF="9ed29d81a39de3ba44e0654bbcf6bf67ca86d1fb"
 
 info() {
   printf '==> %s\n' "$1"
@@ -79,7 +86,7 @@ install_cmux_if_needed() {
 install_official_skills() {
   info "Installing official Cmux skills into ${DEST_DIR}..."
   mkdir -p "$DEST_DIR"
-  curl -fsSL https://raw.githubusercontent.com/manaflow-ai/cmux/main/skills.sh \
+  curl -fsSL "https://raw.githubusercontent.com/manaflow-ai/cmux/${UPSTREAM_CMUX_REF}/skills.sh" \
     | bash -s -- \
       --dest "$DEST_DIR" \
       --skill cmux \
@@ -165,6 +172,98 @@ configure_permissions() {
   info "Added Bash(cmux:*) to ${real_path} (merged with existing permissions)."
 }
 
+install_guard_hook() {
+  local src="${SCRIPT_DIR}/hooks/guard-cmux.sh"
+  local dest="${HOOKS_DEST_DIR}/guard-cmux.sh"
+
+  [[ -f "$src" ]] || die "Missing kit hook source: ${src}"
+
+  info "cmux-kit ships a PreToolUse hook (hooks/guard-cmux.sh) that fail-closes on"
+  info "'cmux browser' mutation subcommands (click/type/fill/press/select/eval/...)"
+  info "targeting a non-dev-shaped URL. Without it, the Bash(cmux:*) permission this"
+  info "installer grants has no mechanical backstop against acting on production-like"
+  info "pages by mistake."
+
+  if ! confirm "Install and register the cmux browser-mutation guard hook now?"; then
+    info "Skipped. You can install it later by re-running ./install.sh, or manually:"
+    info "  cp ${src} ${dest}"
+    info '  Register it in ~/.claude/settings.json under hooks.PreToolUse (matcher "Bash").'
+    return
+  fi
+
+  mkdir -p "$HOOKS_DEST_DIR"
+  if [[ -e "$dest" ]] && ! diff -q "$src" "$dest" >/dev/null 2>&1; then
+    local backup="${dest}.backup.$(date +%Y%m%d%H%M%S)"
+    info "Backing up existing ${dest} to ${backup}"
+    cp "$dest" "$backup"
+  fi
+  cp "$src" "$dest"
+  chmod +x "$dest"
+  info "Copied guard hook to ${dest}."
+
+  register_guard_hook "$dest"
+}
+
+register_guard_hook() {
+  local hook_path="$1"
+  local hook_cmd="\$HOME/.claude/hooks/guard-cmux.sh"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    warn "jq not found — skipping automatic hook registration."
+    warn 'Add this manually to ~/.claude/settings.json under "hooks.PreToolUse":'
+    warn '  {"matcher": "Bash", "hooks": [{"type": "command", "command": "'"$hook_cmd"'"}]}'
+    return
+  fi
+
+  local settings_path="${HOME}/.claude/settings.json"
+  mkdir -p "${HOME}/.claude"
+
+  local real_path="$settings_path"
+  if [[ -L "$settings_path" ]]; then
+    real_path="$(readlink -f "$settings_path" 2>/dev/null || python3 -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$settings_path")"
+  fi
+
+  if [[ ! -e "$real_path" ]]; then
+    info "Creating ${real_path} with the guard hook registered."
+    jq -n --arg cmd "$hook_cmd" \
+      '{hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: $cmd}]}]}}' \
+      > "$real_path"
+    return
+  fi
+
+  if ! jq -e . "$real_path" >/dev/null 2>&1; then
+    warn "${real_path} is not valid JSON — skipping automatic hook registration."
+    warn 'Add this manually under "hooks.PreToolUse":'
+    warn '  {"matcher": "Bash", "hooks": [{"type": "command", "command": "'"$hook_cmd"'"}]}'
+    return
+  fi
+
+  if jq -e --arg cmd "$hook_cmd" \
+      '.hooks.PreToolUse // [] | any(.matcher == "Bash" and ((.hooks // []) | any(.command == $cmd)))' \
+      "$real_path" >/dev/null 2>&1; then
+    info "Guard hook already registered in ${real_path}."
+    return
+  fi
+
+  local backup="${real_path}.backup.$(date +%Y%m%d%H%M%S)"
+  cp "$real_path" "$backup"
+  info "Backed up existing settings to ${backup}"
+
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg cmd "$hook_cmd" '
+    .hooks = (.hooks // {}) |
+    .hooks.PreToolUse = (.hooks.PreToolUse // []) |
+    (.hooks.PreToolUse | map(.matcher == "Bash") | index(true)) as $i |
+    if $i == null then
+      .hooks.PreToolUse += [{matcher: "Bash", hooks: [{type: "command", command: $cmd}]}]
+    else
+      .hooks.PreToolUse[$i].hooks = ((.hooks.PreToolUse[$i].hooks // []) + [{type: "command", command: $cmd}] | unique_by(.command))
+    end
+  ' "$real_path" > "$tmp" && mv "$tmp" "$real_path"
+  info "Registered guard-cmux.sh in ${real_path} (merged with existing hooks)."
+}
+
 configure_theme() {
   local ghostty_config="${HOME}/.config/ghostty/config"
 
@@ -219,6 +318,7 @@ main() {
   install_official_skills
   copy_kit_skills
   configure_permissions
+  install_guard_hook
   configure_theme
   print_next_steps
 }

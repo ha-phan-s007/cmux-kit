@@ -87,6 +87,14 @@ không phải default chung cho mọi người — theme/font là lựa chọn c
 
 4 skill chính chủ lấy từ upstream `manaflow-ai/cmux`. Xem LICENSE tại upstream repository để biết điều khoản sử dụng. Kit này được đóng gói với tham chiếu Cmux version `0.64.17`.
 
+`install.sh` fetch `skills.sh` bằng URL raw.githubusercontent.com **pin theo commit SHA**
+của tag `v0.64.17` upstream (`9ed29d81a39de3ba44e0654bbcf6bf67ca86d1fb` — verify bằng
+`git ls-remote --tags https://github.com/manaflow-ai/cmux.git`, và khớp với build hash
+`cmux --version` in ra), KHÔNG fetch từ branch `main` đang trôi. Điều này đảm bảo nội
+dung `skills.sh` không đổi ngầm giữa các lần cài trên các máy khác nhau. Nếu cần bump
+version kit, cập nhật cả `CMUX_VERSION` và `UPSTREAM_CMUX_REF` trong `install.sh` cùng
+lúc sau khi verify lại bằng `git ls-remote --tags`.
+
 ## Safety & ToS notes
 
 - Chỉ thao tác trên URL an toàn và đúng phạm vi công việc.
@@ -94,6 +102,43 @@ không phải default chung cho mọi người — theme/font là lựa chọn c
 - Với Gemini/Google, chỉ dùng account của chính bạn; ToS automation là vùng xám, nên tránh spam, scraping hàng loạt, hoặc hành vi vượt tần suất người dùng thật.
 - Giữ token hygiene: ưu tiên `snapshot --interactive`, trích text cần thiết, không đưa DOM dump/screenshot vào context nếu không cần.
 - Cmux browser dùng WKWebView, nên một số khả năng Chrome/CDP như viewport emulation, offline emulation, trace/screencast, network interception có thể không hỗ trợ.
+
+### Mechanical backstop: guard-cmux.sh
+
+`cmux browser` chạy qua Bash tool thường (không có ranh giới MCP tool để chặn), và
+installer cấp permission rộng `Bash(cmux:*)` cho DX — nghĩa là không có prompt xin
+phép trước mỗi lệnh `cmux`. Rule "chỉ thao tác trên URL an toàn" ở trên chỉ là hướng
+dẫn cho agent tự giác tuân theo; nó không tự chặn được gì nếu agent phán đoán sai.
+
+Kit đóng gói `hooks/guard-cmux.sh` làm backstop cơ học cho đúng khoảng trống đó:
+
+- Chỉ xét các lệnh `cmux browser ...`; các lệnh Bash khác đi qua ngay (exit 0).
+- Chỉ gate các subcommand có tính **mutation**: `click`, `dblclick`, `type`, `fill`,
+  `press`/`key`, `select`, `check`/`uncheck`, `drag`/`drop`, `upload_file`, `eval`,
+  `addinitscript`/`addscript`/`addstyle`, `cookies set|clear`, `storage set|clear`,
+  `state load`, `network route`. Các subcommand đọc (`get`, `snapshot`, `wait`,
+  `screenshot`, `console`, `errors`, `hover`, `focus`, `tab close`, `state save`,
+  `reload`...) luôn được allow.
+- Khi gate: resolve URL thật của surface (`cmux browser <ref> get url`), rồi so khớp
+  hostname — allow nếu hostname (hoặc một label tách bằng dấu chấm) khớp một trong các
+  keyword an toàn (`localhost`, `127.0.0.1`, `0.0.0.0`, `dev`, `staging`, `stage`,
+  `test`, `sandbox`, `preview`), hoặc hostname kết thúc bằng `.local`, hoặc đúng
+  `gemini.google.com` (whitelist cho skill `ask-gemini`). Match theo label nên
+  `dev.foo.com` được allow nhưng `devices.foo.com` hay `protest.com` thì KHÔNG.
+- Nếu URL không thuộc nhóm an toàn ở trên, hook vẫn allow nếu có bản ghi phê duyệt
+  còn hiệu lực tại `.clark/.qc-browser-approval.json` (cùng format với
+  `guard-browser.sh` phía hey-clark: `approved`, `url` khớp chính xác, `expires_at`
+  dạng ISO-8601 UTC chưa hết hạn, `human_approved:true` cho URL production-like).
+- **Fail-closed**: nếu không resolve được URL của surface (surface chết, cmux CLI
+  thiếu, timeout) hoặc hostname không parse được, lệnh bị BLOCK — đây là an toàn, không
+  phải tiện lợi.
+
+Installer sẽ hỏi xác nhận trước khi copy hook vào `~/.claude/hooks/guard-cmux.sh` và
+đăng ký nó vào `~/.claude/settings.json` (`hooks.PreToolUse`, matcher `"Bash"`, merge an
+toàn qua `jq`, backup file cũ, idempotent — chạy lại install không tạo bản đăng ký trùng).
+Nếu máy không có `jq`, bước đăng ký tự động bị skip và installer in ra đoạn JSON để bạn
+tự thêm tay. Việc cấp `Bash(cmux:*)` rộng vẫn hợp lý cho DX chính vì hook này đứng làm
+lưới an toàn cơ học phía sau nó.
 
 ## Troubleshooting
 
