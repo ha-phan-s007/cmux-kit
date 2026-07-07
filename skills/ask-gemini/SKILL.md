@@ -141,10 +141,12 @@ If this prints a Google login URL instead of `gemini.google.com/app`, go to Logi
 
 ## Model Selection (optional — `MODEL` argument)
 
-Gemini web lets you pick a model via the mode picker button (labelled "Mở công cụ chọn chế độ,
-hiện tại là <model>" in VN, "Open mode picker, currently <model>" in EN — the model NAME
-itself, e.g. `3.5 Flash`, `3.5 Thinking`, `3.1 Pro`, is NOT translated, so matching on it is
-locale-independent). Default when the caller doesn't specify one: `3.5 Flash`.
+Gemini web lets you pick a model via the mode picker button. Its aria-label IS locale-varying
+("Mở công cụ chọn chế độ, hiện tại là <model>" in VN, "Open mode picker, currently <model>"
+in EN) so do NOT match on that text. The model NAME itself (e.g. `3.5 Flash`, `3.5 Thinking`,
+`3.1 Pro`) is NOT translated — the code below finds the button locale-independently as the one
+carrying the dropdown-arrow icon AND a model-name token in its aria-label, marks it with a
+`data-cmux-modelpicker` attribute, and clicks that. Default model when unspecified: `3.5 Flash`.
 
 Each option in the menu (`[role="menu"] gem-menu-item`) carries a stable `data-mode-id` hash
 attribute — click that attribute selector, not a positional `:nth-of-type` (menu items ARE
@@ -158,11 +160,20 @@ when already on the right model (fewer actions = less bot-like, and faster):
 MODEL="${MODEL:-3.5 Flash}"
 jitter() { python3 -c "import random,sys; lo,hi=float(sys.argv[1]),float(sys.argv[2]); print(round(random.uniform(lo,hi),1))" "$@"; }
 
-current_label=$(cmux browser $S get text 'button[aria-label*="chọn chế độ"]' 2>/dev/null)
-if [ -n "$MODEL" ] && ! printf '%s' "$current_label" | grep -qF "$MODEL"; then
-  cmux browser $S hover 'button[aria-label*="chọn chế độ"]'
+# Locate the mode-picker button LOCALE-INDEPENDENTLY (verified live 2026-07-07):
+# it is the button that has the dropdown-arrow icon (data-mat-icon-name=
+# keyboard_arrow_down) AND whose aria-label contains a model name (Flash/Pro/
+# Thinking/... — model names are NOT translated, unlike the surrounding "chọn chế
+# độ"/"mode picker" text). keyboard_arrow_down ALONE matches 2 buttons (the picker
+# AND a "recent" toggle), so the model-token test is what disambiguates. Mark it
+# with our own data-cmux-modelpicker attribute and interact via that selector.
+current_label=$(cmux browser $S eval '(() => { const re=/(Flash|Pro|Thinking|Nano|Ultra)/; document.querySelectorAll("[data-cmux-modelpicker]").forEach(e=>e.removeAttribute("data-cmux-modelpicker")); const b=[...document.querySelectorAll("button")].find(x=> x.querySelector("[data-mat-icon-name=keyboard_arrow_down]") && re.test(x.getAttribute("aria-label")||"")); if(!b) return ""; b.setAttribute("data-cmux-modelpicker","1"); return b.getAttribute("aria-label")||""; })()' 2>/dev/null)
+if [ -z "$current_label" ]; then
+  echo "WARNING: mode-picker button not found (Gemini DOM may have changed) — continuing with current model." >&2
+elif [ -n "$MODEL" ] && ! printf '%s' "$current_label" | grep -qF "$MODEL"; then
+  cmux browser $S hover 'button[data-cmux-modelpicker="1"]'
   sleep "$(jitter 0.3 0.8)"
-  cmux browser $S click 'button[aria-label*="chọn chế độ"]'
+  cmux browser $S click 'button[data-cmux-modelpicker="1"]'
   sleep "$(jitter 0.8 1.5)"                            # menu open + reading the options
   menu_html=$(cmux browser $S get html '[role="menu"]' 2>/dev/null)
   mode_id=$(printf '%s' "$menu_html" | python3 -c "
@@ -185,8 +196,10 @@ for mid, label in re.findall(r'data-mode-id=\"([a-f0-9]+)\".*?class=\"label\">\s
 fi
 ```
 
-Verified end-to-end 2026-07-07: switching `3.1 Pro` → `3.5 Flash` this way, confirmed by
-re-reading the mode-picker button's label afterward.
+Verified live 2026-07-07: the locale-independent marker selector uniquely tags the mode-picker
+button (count=1 on a VN-locale Gemini where its aria-label is "...chọn chế độ..., hiện tại là
+3.1 Pro"), and hover+click on `button[data-cmux-modelpicker="1"]` opens the picker (3 menu
+items appeared), all with a clean console.
 
 ## Login Handling
 
