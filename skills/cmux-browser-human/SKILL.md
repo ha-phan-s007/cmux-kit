@@ -25,41 +25,43 @@ Every browser action must follow a human rhythm unless it is purely read-only ev
 
 Copy these helpers into the same Bash invocation as the task flow. Keep them near the top so all later browser commands go through them.
 
-> **Positional-arg tokens ($1/$2/$3...) — write them via `args=("$@")` + array index, never bare.**
-> Observed 2026-07-07 (see `ask-gemini` skill's Known Failure Modes): when a skill is invoked
-> with multi-word `args`, the rendered content handed to the agent had literal `$1`/`$2` tokens
-> silently replaced with words from those args — the file on disk was unaffected, only what
-> gets displayed at invocation time. Root cause is upstream in the skill-loading layer, not
-> fixable in this repo. Every helper below reads its parameters through `local args=("$@")`
-> then `"${args[0]}"`, `"${args[1]}"`, etc. instead of bare `$1`/`$2`/`$3`, specifically to avoid
-> that token shape. Keep this pattern for any new helper added here.
+> **Positional params ($1/$2/$3) are correct and portable here — the earlier "fix" to this
+> section was wrong and has been reverted.** Two distinct issues got conflated on 2026-07-07:
+> (1) a display-only bug where the Skill-loading layer can silently replace literal `$1`/`$2`
+> text with words from a skill's invocation `args` in what gets RENDERED to the agent (the file
+> on disk is never affected — verify by reading the file directly if a rendered `$N` looks
+> wrong); (2) a real execution bug introduced by "fixing" (1) via `local args=("$@")` +
+> `"${args[0]}"`: this machine's Bash tool runs through **zsh**, and zsh arrays are **1-indexed
+> by default** — `${args[0]}` is always empty there, so every helper silently received an empty
+> surface/target/text and no-op'd (confirmed live: `human_type`/`human_click`/`human_select` all
+> failed against a real local test page after that rewrite, while the original plain-`$1` form
+> passed). Plain `$1`/`$2`/`$3` on function positional parameters is unaffected by that
+> bash/zsh indexing difference (it's not a named array), so it is both correct and the safer
+> choice. `jitter()` below still takes its bounds via `"$@"`/`sys.argv` (delegated to Python, so
+> no shell array indexing is involved) — that part of the original fix was sound and is kept.
 
 ```bash
 jitter() { python3 -c "import random,sys; lo,hi=float(sys.argv[1]),float(sys.argv[2]); print(round(random.uniform(lo,hi),1))" "$@"; }
 
 human_pause() {
-  local args=("$@")
-  local min="${args[0]:-0.4}"
-  local max="${args[1]:-1.2}"
+  local min="${1:-0.4}"
+  local max="${2:-1.2}"
   sleep "$(jitter "$min" "$max")"
 }
 
 ensure_surface_alive() {
-  local args=("$@")
-  local surface="${args[0]}"
+  local surface="$1"
   cmux browser "$surface" get url >/dev/null 2>&1
 }
 
 human_after_load() {
-  local args=("$@")
-  local surface="${args[0]}"
+  local surface="$1"
   cmux browser "$surface" wait --load-state complete --timeout-ms 15000
   human_pause 1.0 2.5
 }
 
 human_snapshot() {
-  local args=("$@")
-  local surface="${args[0]}"
+  local surface="$1"
   ensure_surface_alive "$surface" || return 1
   cmux browser "$surface" get url
   cmux browser "$surface" wait --load-state complete --timeout-ms 15000
@@ -68,22 +70,20 @@ human_snapshot() {
 }
 
 human_click() {
-  local args=("$@")
-  local surface="${args[0]}"
-  local target="${args[1]}"
-  local extra=("${args[@]:2}")
+  local surface="$1"
+  local target="$2"
+  shift 2
   ensure_surface_alive "$surface" || return 1
   cmux browser "$surface" hover "$target"
   human_pause 0.2 0.8
-  cmux browser "$surface" click "$target" "${extra[@]}"
+  cmux browser "$surface" click "$target" "$@"
   human_pause 0.7 1.8
 }
 
 human_type() {
-  local args=("$@")
-  local surface="${args[0]}"
-  local target="${args[1]}"
-  local text="${args[2]}"
+  local surface="$1"
+  local target="$2"
+  local text="$3"
   ensure_surface_alive "$surface" || return 1
   cmux browser "$surface" hover "$target"
   human_pause 0.2 0.7
@@ -94,10 +94,9 @@ human_type() {
 }
 
 human_fill_fallback() {
-  local args=("$@")
-  local surface="${args[0]}"
-  local target="${args[1]}"
-  local text="${args[2]}"
+  local surface="$1"
+  local target="$2"
+  local text="$3"
   ensure_surface_alive "$surface" || return 1
   cmux browser "$surface" hover "$target"
   human_pause 0.2 0.7
@@ -108,9 +107,8 @@ human_fill_fallback() {
 }
 
 human_press() {
-  local args=("$@")
-  local surface="${args[0]}"
-  local key="${args[1]}"
+  local surface="$1"
+  local key="$2"
   ensure_surface_alive "$surface" || return 1
   human_pause 0.2 0.8
   cmux browser "$surface" press "$key"
@@ -118,10 +116,9 @@ human_press() {
 }
 
 human_select() {
-  local args=("$@")
-  local surface="${args[0]}"
-  local target="${args[1]}"
-  local value="${args[2]}"
+  local surface="$1"
+  local target="$2"
+  local value="$3"
   ensure_surface_alive "$surface" || return 1
   cmux browser "$surface" hover "$target"
   human_pause 0.3 0.9
