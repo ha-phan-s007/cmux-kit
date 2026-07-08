@@ -83,6 +83,19 @@ Real incidents hit while building this skill, and why each matters:
    `jitter()` below, which takes its bounds via `"$@"` + `sys.argv` instead. If you add new bash
    here, verify by reading the file straight off disk (not via the Skill tool output) before
    trusting any `$<digit>` you see rendered.
+5. **Gemini's Trusted Types CSP kills the cmux JS bridge — this was the real cause of the
+   2026-07-07/08 mid-generation "pane deaths", not bot detection.** Gemini serves
+   `require-trusted-types-for 'script'`; the cmux browser bridge's string-to-sink writes
+   violate it (`This requires a TrustedScript value` in the console, observed x4 per
+   session), and after enough violations the bridge stops responding — `get url` fails and
+   the run looks exactly like failure mode #2 even though the webview is still open. The
+   ad/analytics `Refused to connect... doubleclick/ga-audiences/pagead` console errors that
+   appear alongside are Gemini's own CSP blocking Google trackers — benign noise, ignore
+   them. Fix (now part of Surface Resolution below): install a permissive Trusted Types
+   `default` policy via `addinitscript` before the post-open reload. Verified 2026-07-08:
+   two consecutive sessions died without it; with it, a full ask + follow-up completed with
+   zero TrustedScript violations. If pane deaths recur, check `console list` for
+   TrustedScript lines FIRST before blaming bot detection.
 
 ## Surface Resolution (state-tracked, self-healing)
 
@@ -116,11 +129,21 @@ if [ -z "$S" ]; then
   jq -n --arg url "https://gemini.google.com" --arg expires "$QC_EXPIRES" \
         '{approved:true, classification:"safe", human_approved:false, url:$url, expires_at:$expires}' \
         > .clark/.qc-browser-approval.json
+  # Trusted Types compatibility (root-cause fix, verified 2026-07-08 — see Known
+  # failure modes #5): Gemini ships CSP require-trusted-types-for 'script'. Without a
+  # "default" policy, the cmux JS bridge's string-to-sink writes throw TrustedScript
+  # violations and the bridge dies mid-session ("pane died" with the surface still
+  # open). Installing a permissive default policy BEFORE page scripts run (init
+  # scripts execute at the embedder layer, so CSP cannot block the install itself)
+  # launders those writes through the policy instead of throwing. Verified: 4
+  # violations + 2 pane deaths without it; 0 violations across full ask+follow-up
+  # sessions with it.
+  cmux browser "$S" addinitscript "if (window.trustedTypes && window.trustedTypes.createPolicy) { try { window.trustedTypes.createPolicy('default', { createHTML: function(s){return s;}, createScript: function(s){return s;}, createScriptURL: function(s){return s;} }); } catch(e) {} }"
   # Fingerprint hardening (source of truth: cmux-browser-human "Fingerprint / header
   # check") — WKWebView reports outerWidth/outerHeight=0, a classic automation tell.
   # addinitscript only takes effect on the NEXT navigation, so reload once now. Only
-  # do this for a freshly opened surface — a reused surface already has it applied
-  # and reloading it would lose page/session state.
+  # do this for a freshly opened surface — a reused surface already has both init
+  # scripts applied and reloading it would lose page/session state.
   cmux browser "$S" addinitscript "Object.defineProperty(window, 'outerWidth', {get: () => window.innerWidth}); Object.defineProperty(window, 'outerHeight', {get: () => window.innerHeight + 74});"
   cmux browser "$S" reload
 fi

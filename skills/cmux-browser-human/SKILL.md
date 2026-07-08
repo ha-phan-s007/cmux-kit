@@ -213,6 +213,31 @@ document — call it once right after `open`, then `reload` (or navigate) before
 else, if this hardening matters for the target site. This costs one extra round-trip; skip it
 for low-stakes/local targets where it doesn't matter.
 
+**Real gap found and fixed — Trusted Types CSP kills this skill's own JS bridge, and it masquerades
+as a dead pane (verified 2026-07-08 via `ask-gemini`, which ports this section):** any site serving
+`Content-Security-Policy: require-trusted-types-for 'script'` (Gemini's web UI does) rejects
+string-to-sink writes with `This requires a TrustedScript value` — and the `cmux browser` bridge's
+own JS calls (`eval`, `get text`, etc.) are exactly that kind of write. Enough violations in one
+session and the bridge stops responding: `get url` then fails mid-task, which reads identically to
+"the pane crashed," even though the webview is still open. Console noise like `Refused to
+connect/load ... doubleclick/ga-audiences/pagead` on the same page is a red herring — that's the
+site's CSP blocking its OWN ad/analytics beacons, unrelated and harmless. Fix (verified: 4
+TrustedScript violations + bridge death without it, 0 violations across a full multi-turn session
+with it) — install a permissive Trusted Types `default` policy in the SAME `addinitscript` call
+used for the fingerprint fix above, before the post-open `reload`:
+
+```bash
+cmux browser "$SURFACE" addinitscript "if (window.trustedTypes && window.trustedTypes.createPolicy) { try { window.trustedTypes.createPolicy('default', { createHTML: function(s){return s;}, createScript: function(s){return s;}, createScriptURL: function(s){return s;} }); } catch(e) {} }"
+```
+
+This works because init scripts run at the embedder layer before the page's own CSP is
+enforced on page-loaded scripts, so installing the policy is not itself blocked. If a target
+site's CSP doesn't include `require-trusted-types-for`, this is a harmless no-op — safe to
+include by default alongside the fingerprint fix rather than conditionally, since detecting
+Trusted Types enforcement in advance isn't worth the extra round-trip. If a pane appears to
+die mid-session on ANY site using this skill, check `console list` for `TrustedScript` lines
+before assuming bot-detection or a real crash.
+
 **Real gap found, NOT fixed — the webview never has real OS-level keyboard focus during
 automation:** `document.hasFocus()` returns `false` while `document.visibilityState` is
 `"visible"` — an inconsistent combination a detector could check. `cmux browser <surface>
